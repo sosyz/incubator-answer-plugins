@@ -17,7 +17,7 @@
  * under the License.
  */
 
-package s3
+package tencentyuncos
 
 import (
 	"crypto/rand"
@@ -26,13 +26,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/apache/incubator-answer-plugins/util"
+	"net/http"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/apache/incubator-answer-plugins/storage-s3/i18n"
+	"github.com/apache/incubator-answer-plugins/storage-tencentyuncos/i18n"
 	"github.com/apache/incubator-answer/plugin"
+	"github.com/tencentyun/cos-go-sdk-v5"
 )
 
 //go:embed  info.yaml
@@ -45,20 +48,16 @@ const (
 
 type Storage struct {
 	Config *StorageConfig
-	Client *Client
 }
 
 type StorageConfig struct {
-	Endpoint        string `json:"endpoint"`
+	Region          string `json:"region"`
 	BucketName      string `json:"bucket_name"`
 	ObjectKeyPrefix string `json:"object_key_prefix"`
-	AccessKeyID     string `json:"access_key_id"`
-	AccessKeySecret string `json:"access_key_secret"`
-	AccessToken     string `json:"access_token"`
+	SecretID        string `json:"secret_id"`
+	SecretKey       string `json:"secret_key"`
 	VisitUrlPrefix  string `json:"visit_url_prefix"`
 	MaxFileSize     string `json:"max_file_size"`
-	Region          string `json:"region"`
-	DisableSSL      bool   `json:"disable_ssl"`
 }
 
 func init() {
@@ -84,6 +83,22 @@ func (s *Storage) Info() plugin.Info {
 func (s *Storage) UploadFile(ctx *plugin.GinContext, source plugin.UploadSource) (resp plugin.UploadFileResponse) {
 	resp = plugin.UploadFileResponse{}
 
+	BucketURL, _ := url.Parse(fmt.Sprintf("https://%s.cos.%s.myqcloud.com", s.Config.BucketName, s.Config.Region))
+	BaseURL := &cos.BaseURL{BucketURL: BucketURL}
+	client := cos.NewClient(BaseURL, &http.Client{
+		Transport: &cos.AuthorizationTransport{
+			SecretID:  s.Config.SecretID,
+			SecretKey: s.Config.SecretKey,
+		},
+	})
+
+	_, err := client.Bucket.IsExist(ctx)
+	if err != nil {
+		resp.OriginalError = fmt.Errorf("head bucket failed: %v", err)
+		resp.DisplayErrorMsg = plugin.MakeTranslator(i18n.ErrMisStorageConfig)
+		return resp
+	}
+
 	file, err := ctx.FormFile("file")
 	if err != nil {
 		resp.OriginalError = fmt.Errorf("get upload file failed: %v", err)
@@ -91,7 +106,7 @@ func (s *Storage) UploadFile(ctx *plugin.GinContext, source plugin.UploadSource)
 		return resp
 	}
 
-	if !s.checkFileType(file.Filename, source) {
+	if !s.CheckFileType(file.Filename, source) {
 		resp.OriginalError = fmt.Errorf("file type not allowed")
 		resp.DisplayErrorMsg = plugin.MakeTranslator(i18n.ErrUnsupportedFileType)
 		return resp
@@ -112,7 +127,7 @@ func (s *Storage) UploadFile(ctx *plugin.GinContext, source plugin.UploadSource)
 	defer openFile.Close()
 
 	objectKey := s.createObjectKey(file.Filename, source)
-	err = s.Client.PutObject(objectKey, strings.ToLower(filepath.Ext(file.Filename)), openFile)
+	_, err = client.Object.Put(ctx, objectKey, openFile, nil)
 	if err != nil {
 		resp.OriginalError = fmt.Errorf("upload file failed: %v", err)
 		resp.DisplayErrorMsg = plugin.MakeTranslator(i18n.ErrUploadFileFailed)
@@ -143,7 +158,7 @@ func (s *Storage) randomObjectKey() string {
 	return fmt.Sprintf("%d", time.Now().UnixNano()) + hex.EncodeToString(bytes)
 }
 
-func (s *Storage) checkFileType(originalFilename string, source plugin.UploadSource) bool {
+func (s *Storage) CheckFileType(originalFilename string, source plugin.UploadSource) bool {
 	ext := strings.ToLower(filepath.Ext(originalFilename))
 	if _, ok := plugin.DefaultFileTypeCheckMapping[source][ext]; ok {
 		return true
@@ -165,15 +180,15 @@ func (s *Storage) maxFileSizeLimit() int64 {
 func (s *Storage) ConfigFields() []plugin.ConfigField {
 	return []plugin.ConfigField{
 		{
-			Name:        "endpoint",
+			Name:        "region",
 			Type:        plugin.ConfigTypeInput,
-			Title:       plugin.MakeTranslator(i18n.ConfigEndpointTitle),
-			Description: plugin.MakeTranslator(i18n.ConfigEndpointDescription),
+			Title:       plugin.MakeTranslator(i18n.ConfigRegionTitle),
+			Description: plugin.MakeTranslator(i18n.ConfigRegionDescription),
 			Required:    true,
 			UIOptions: plugin.ConfigFieldUIOptions{
 				InputType: plugin.InputTypeText,
 			},
-			Value: s.Config.Endpoint,
+			Value: s.Config.Region,
 		},
 		{
 			Name:        "bucket_name",
@@ -198,37 +213,26 @@ func (s *Storage) ConfigFields() []plugin.ConfigField {
 			Value: s.Config.ObjectKeyPrefix,
 		},
 		{
-			Name:        "access_key_id",
+			Name:        "secret_id",
 			Type:        plugin.ConfigTypeInput,
-			Title:       plugin.MakeTranslator(i18n.ConfigAccessKeyIdTitle),
-			Description: plugin.MakeTranslator(i18n.ConfigAccessKeyIdDescription),
-			Required:    false,
+			Title:       plugin.MakeTranslator(i18n.ConfigSecretIdTitle),
+			Description: plugin.MakeTranslator(i18n.ConfigSecretIdDescription),
+			Required:    true,
 			UIOptions: plugin.ConfigFieldUIOptions{
 				InputType: plugin.InputTypeText,
 			},
-			Value: s.Config.AccessKeyID,
+			Value: s.Config.SecretID,
 		},
 		{
-			Name:        "access_key_secret",
+			Name:        "secret_key",
 			Type:        plugin.ConfigTypeInput,
-			Title:       plugin.MakeTranslator(i18n.ConfigAccessKeySecretTitle),
-			Description: plugin.MakeTranslator(i18n.ConfigAccessKeySecretDescription),
-			Required:    false,
+			Title:       plugin.MakeTranslator(i18n.ConfigSecretKeyTitle),
+			Description: plugin.MakeTranslator(i18n.ConfigSecretKeyDescription),
+			Required:    true,
 			UIOptions: plugin.ConfigFieldUIOptions{
 				InputType: plugin.InputTypeText,
 			},
-			Value: s.Config.AccessKeySecret,
-		},
-		{
-			Name:        "access_token",
-			Type:        plugin.ConfigTypeInput,
-			Title:       plugin.MakeTranslator(i18n.ConfigAccessTokenTitle),
-			Description: plugin.MakeTranslator(i18n.ConfigAccessTokenDescription),
-			Required:    false,
-			UIOptions: plugin.ConfigFieldUIOptions{
-				InputType: plugin.InputTypeText,
-			},
-			Value: s.Config.AccessToken,
+			Value: s.Config.SecretKey,
 		},
 		{
 			Name:        "visit_url_prefix",
@@ -252,26 +256,6 @@ func (s *Storage) ConfigFields() []plugin.ConfigField {
 			},
 			Value: s.Config.MaxFileSize,
 		},
-		{
-			Name:        "region",
-			Type:        plugin.ConfigTypeInput,
-			Title:       plugin.MakeTranslator(i18n.ConfigRegionTitle),
-			Description: plugin.MakeTranslator(i18n.ConfigRegionDescription),
-			Required:    true,
-			UIOptions: plugin.ConfigFieldUIOptions{
-				InputType: plugin.InputTypeText,
-			},
-			Value: s.Config.Region,
-		},
-		{
-			Name:  "disable_ssl",
-			Type:  plugin.ConfigTypeSwitch,
-			Title: plugin.MakeTranslator(i18n.ConfigDisableSSLTitle),
-			Value: s.Config.DisableSSL,
-			UIOptions: plugin.ConfigFieldUIOptions{
-				Label: plugin.MakeTranslator(i18n.ConfigDisableSSLDescription),
-			},
-		},
 	}
 }
 
@@ -279,14 +263,5 @@ func (s *Storage) ConfigReceiver(config []byte) error {
 	c := &StorageConfig{}
 	_ = json.Unmarshal(config, c)
 	s.Config = c
-	s.Client = NewS3Client(
-		s.Config.AccessKeyID,
-		s.Config.AccessKeySecret,
-		s.Config.AccessToken,
-		s.Config.Endpoint,
-		s.Config.Region,
-		s.Config.BucketName,
-		s.Config.DisableSSL,
-	)
 	return nil
 }

@@ -15,8 +15,8 @@
 # specific language governing permissions and limitations
 # under the License.
 
-slug_name: basic_embed
-type: editor
-version: 1.0.5
-author: answerdev
-link: https://github.com/apache/incubator-answer-plugins/tree/main/embed-basic
+slug_name: baidu_reviewer
+type: reviewer
+version: 1.0.0
+author: Luffy
+link: https://github.com/apache/incubator-answer-plugins/tree/main/reviewer-baidu
